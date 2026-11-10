@@ -27,7 +27,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 if sys.version_info < (3, 8):
     sys.exit("Python 3.8 oder neuer wird benötigt.")
 
-VERSION = "1.0"
+VERSION = "1.1"
 BASE = os.path.dirname(os.path.realpath(__file__))
 SETTINGS_FILE = os.path.join(BASE, "einstellungen.json")
 MEMORY_FILE = os.path.join(BASE, "gedaechtnis.json")
@@ -67,6 +67,11 @@ DEFAULTS = {
     "oberflaeche": "vortex",
     "chat_sichtbar": True,
     "sounds": True,
+    "strikt_lokal": False,          # nichts verlässt den PC (nur Ollama, keine Online-Dienste)
+    "privat_weiche": True,          # private Daten automatisch lokal statt Cloud
+    "gedaechtnis_cloud": False,     # Gedächtnis auch an Cloud-KI senden
+    "privat_woerter": "",           # eigene Stichwörter, die als privat gelten (Komma getrennt)
+    "lokal_modell": "",             # Ollama-Modell für private Nachrichten
     "routinen": [
         {"satz": "guten morgen", "aktion": "briefing", "wert": ""},
         {"satz": "öffne youtube", "aktion": "webseite", "wert": "https://www.youtube.com"},
@@ -497,6 +502,8 @@ def geocode(ort):
 
 def wetter(s):
     ort = (s.get("ort") or "Berlin").strip()
+    if s.get("strikt_lokal"):
+        return {"fehler": "Strikt lokal ist an, deshalb wird kein Wetter aus dem Internet geladen.", "ort": ort}
 
     def fetch():
         lat, lon, name = geocode(ort)
@@ -682,6 +689,83 @@ def route(u, s, orig=None):
     return actions, ctx, direct
 
 
+# ---------------------------------------------------------------- Datenschutz
+def ist_cloud(s, anbieter):
+    if anbieter == "claude":
+        return True
+    if anbieter == "openai":
+        u = (s.get("openai_url") or "").lower()
+        return not ("localhost" in u or "127.0.0.1" in u)
+    return False
+
+
+def _luhn(num):
+    d = [int(x) for x in num][::-1]
+    return sum(x if i % 2 == 0 else (x * 2 - 9 if x * 2 > 9 else x * 2) for i, x in enumerate(d)) % 10 == 0
+
+
+PRIV_RE = [
+    ("E-Mail-Adresse", re.compile(r"[\w.+-]+@[\w-]+\.[a-z]{2,}", re.I)),
+    ("IBAN", re.compile(r"\b[A-Z]{2}\d{2}(?: ?[A-Z0-9]{4}){3,7}(?: ?[A-Z0-9]{1,3})?\b")),
+    ("Adresse", re.compile(r"\b[A-ZÄÖÜa-zäöü][\wäöüß-]*(?:straße|strasse|str\.|weg|gasse|platz|allee|ring|damm|chaussee)\s+\d{1,4}\s?[a-z]?\b", re.I)),
+    ("Postleitzahl", re.compile(r"\b\d{5}\s+[A-ZÄÖÜ][a-zäöüß]{2,}")),
+    ("API-Schlüssel", re.compile(r"\b(?:sk|pk|gsk|xai)[-_][A-Za-z0-9_-]{12,}")),
+]
+PHONE_RE = re.compile(r"(?<![\w.,])(?:\+|00)\d[\d\s/()-]{6,}\d|(?<![\w.,])0\d{2,5}[\s/-]?\d[\d\s/-]{3,}\d")
+CARD_RE = re.compile(r"(?<!\d)(?:\d[ -]?){13,19}(?!\d)")
+PRIV_WORT = {
+    "Zugangsdaten": r"passwort|kennwort|password|\bpin\b|\btan\b|zugangsdaten|logindaten|login-daten|geheimzahl|api[- ]?key|api[- ]?schlüssel",
+    "Gesundheit": r"diagnose|befund|\bkrank|arzt\b|ärztin|klinik|medikament|therapie|depression|arztbrief|blutwerte|krankschreibung|psychiat|schwanger",
+    "Ausweis oder Steuer": r"ausweisnummer|personalausweis|reisepass|steuer-?id|steuernummer|steueridentifikation|sozialversicherungsnummer|versichertennummer",
+    "Finanzen": r"kontonummer|kontostand|\bgehalt|kreditkarte|bankverbindung|schulden|kredit über",
+}
+
+
+def privat_erkennen(text, s):
+    """Liefert eine Liste von Gründen, warum die Nachricht privat aussieht (leer = nichts erkannt)."""
+    t = text or ""
+    found = []
+    if re.match(r"^\s*(privat|vertraulich|geheim)\b", t, re.I):
+        found.append("als privat markiert")
+    for name, rx in PRIV_RE:
+        if rx.search(t):
+            found.append(name)
+    for m in ([] if "IBAN" in found else PHONE_RE.finditer(t)):
+        if len(re.sub(r"\D", "", m.group(0))) >= 7:
+            found.append("Telefonnummer")
+            break
+    for m in CARD_RE.finditer(t):
+        d = re.sub(r"\D", "", m.group(0))
+        if 13 <= len(d) <= 19 and _luhn(d):
+            found.append("Kartennummer")
+            break
+    low = t.lower()
+    for name, rx in PRIV_WORT.items():
+        if re.search(rx, low):
+            found.append(name)
+    for w in re.split(r"[,;\n]+", s.get("privat_woerter") or ""):
+        w = w.strip().lower()
+        if len(w) >= 2 and re.search(r"(?<![\wäöüß])" + re.escape(w) + r"(?![\wäöüß])", low):
+            found.append("eigenes Stichwort")
+            break
+    out = []
+    for f in found:
+        if f not in out:
+            out.append(f)
+    return out
+
+
+def lokales_modell(s):
+    om = ollama_models(s)
+    if not om.get("ok"):
+        return ""
+    lst = om["models"]
+    for cand in (s.get("lokal_modell"), s.get("modell") if s.get("anbieter") == "ollama" else ""):
+        if cand and cand in lst:
+            return cand
+    return lst[0]
+
+
 # ---------------------------------------------------------------- Prompt
 LAENGE = {"kurz": "Antworte in der Regel in 1 bis 3 kurzen Sätzen.",
           "normal": "Antworte in der Regel in 2 bis 5 Sätzen.",
@@ -690,7 +774,7 @@ TAGE = ["Montag", "Dienstag", "Mittwoch", "Donnerstag", "Freitag", "Samstag", "S
 MONATE = ["Januar", "Februar", "März", "April", "Mai", "Juni", "Juli", "August", "September", "Oktober", "November", "Dezember"]
 
 
-def system_prompt(s, ctx, websuche):
+def system_prompt(s, ctx, websuche, mit_gedaechtnis=True):
     now = datetime.datetime.now()
     name = s.get("name") or "Jarvis"
     p = [f"Du bist {name}, ein persönlicher KI-Assistent im Stil von J.A.R.V.I.S.: ruhig, schlagfertig, hilfsbereit, mit einem "
@@ -710,9 +794,12 @@ def system_prompt(s, ctx, websuche):
         p.append("Du kannst das Web durchsuchen. Nutze es für aktuelle Fragen und nenne die Quelle in Worten.")
     else:
         p.append("Du hast keinen Internetzugang. Für aktuelle Ereignisse sag ehrlich, dass dein Wissen einen Stand hat.")
-    mem = mem_text()
-    p.append("GEDÄCHTNIS (was du dir über deinen Nutzer gemerkt hast):\n" + (mem or "(noch leer)"))
-    if s.get("auto_merken"):
+    if mit_gedaechtnis:
+        p.append("GEDÄCHTNIS (was du dir über deinen Nutzer gemerkt hast):\n" + (mem_text() or "(noch leer)"))
+    else:
+        p.append("GEDÄCHTNIS: Aus Datenschutzgründen bleibt das Gedächtnis auf dem PC des Nutzers und wird dir nicht geschickt. "
+                 "Fragt er danach oder nach 'heute steht an', sag kurz, dass die Notizen nur bei der lokalen KI verfügbar sind.")
+    if s.get("auto_merken") and mit_gedaechtnis:
         p.append("Wenn der Nutzer dir etwas Dauerhaftes über sich erzählt (Name, Vorlieben, Projekte, Termine, Ziele), das noch "
                  "nicht im Gedächtnis steht, hänge ganz am Ende genau eine Zeile an: [merken: kurzer Satz in der dritten Person]. "
                  "Diese Zeile wird nicht vorgelesen. Sonst nie.")
@@ -726,9 +813,11 @@ class KIError(Exception):
     pass
 
 
-def clean_history(msgs):
+def clean_history(msgs, ohne_privat=False):
     out = []
     for m in msgs or []:
+        if ohne_privat and m.get("privat"):
+            continue
         role = "assistant" if m.get("role") == "assistant" else "user"
         text = str(m.get("content") or "").strip()[:6000]
         if not text:
@@ -894,25 +983,65 @@ class TagFilter:
 # ---------------------------------------------------------------- Chat
 def run_chat(payload, emit):
     s = load_settings()
-    msgs = clean_history(payload.get("messages"))
+    raw = [m for m in (payload.get("messages") or []) if isinstance(m, dict)]
+    msgs = clean_history(raw)
     if not msgs:
         return emit({"t": "error", "message": "Leere Nachricht."})
-    u = msgs[-1]["content"].lower()
-    actions, ctx, direct = route(u, s, msgs[-1]["content"])
+    text = msgs[-1]["content"]
+    u = text.lower()
+    anbieter, model = pick_model(s)
+
+    # ---- Datenschutz-Weiche: entscheidet VOR allem anderen, ob diese Nachricht den PC verlassen darf
+    if s.get("strikt_lokal") and ist_cloud(s, anbieter):
+        anbieter, model = "ollama", lokales_modell(s)
+        if not model:
+            return emit({"t": "error", "message": "Strikt lokal ist an, aber Ollama läuft nicht oder hat kein Modell. Es wurde nichts gesendet."})
+    gruende = []
+    if ist_cloud(s, anbieter) and s.get("privat_weiche") and not payload.get("erzwingen_cloud"):
+        gruende = privat_erkennen(text, s)
+        if gruende:
+            lm = lokales_modell(s)
+            if not lm:
+                return emit({"t": "privat", "weiter": "blockiert", "gruende": gruende,
+                             "message": "Private Daten erkannt (" + ", ".join(gruende) + "). Die lokale KI (Ollama) ist nicht erreichbar, "
+                                        "deshalb habe ich nichts an die Cloud geschickt."})
+            anbieter, model = "ollama", lm
+            emit({"t": "privat", "weiter": "lokal", "gruende": gruende, "modell": lm})
+    cloud = ist_cloud(s, anbieter)
+    mem_ok = (not cloud) or bool(s.get("gedaechtnis_cloud"))
+
+    actions, ctx, direct = route(u, s, text)
     for a in actions:
         emit({"t": "action", **a})
     if direct:
         emit({"t": "delta", "text": direct})
         return emit({"t": "done", "text": direct})
-    anbieter, model = pick_model(s)
+    # Merk-Befehle in der Cloud ohne Gedächtnis-Freigabe: lokal bestätigen, nichts senden
+    memacts = [a for a in actions if a.get("typ") == "gedaechtnis"]
+    if cloud and not mem_ok and memacts:
+        a = memacts[0]
+        if a["aktion"] == "gespeichert":
+            reply = f"Alles klar, gemerkt: {a['text']}."
+        elif a.get("anzahl"):
+            reply = "Erledigt, ich habe " + ("eine Notiz" if a["anzahl"] == 1 else f"{a['anzahl']} Notizen") + " gelöscht."
+        else:
+            reply = "Dazu habe ich nichts gespeichert."
+        emit({"t": "privat", "weiter": "lokal", "gruende": ["Gedächtnis bleibt lokal"], "modell": "ohne KI"})
+        emit({"t": "delta", "text": reply})
+        return emit({"t": "done", "text": reply})
+    if cloud:
+        msgs = clean_history(raw, ohne_privat=True)
+        if not msgs or msgs[-1]["content"] != text:
+            msgs = (msgs or []) + [{"role": "user", "content": text}]
+            msgs = clean_history(msgs)
     if not model:
         hint = {"ollama": "Kein Ollama-Modell gefunden. Läuft Ollama und ist ein Modell installiert? (ollama pull llama3.2)",
                 "claude": "Kein Claude-Modell verfügbar. Ist der Schlüssel in den Einstellungen eingetragen?",
                 "openai": "Kein Modell verfügbar. Sind Basis-Adresse und Schlüssel in den Einstellungen eingetragen?"}[anbieter]
         return emit({"t": "error", "message": hint})
-    emit({"t": "model", "anbieter": anbieter, "modell": model})
+    emit({"t": "model", "anbieter": anbieter, "modell": model, "cloud": cloud})
     websuche = anbieter == "claude" and bool(s.get("websuche"))
-    system = system_prompt(s, ctx, websuche)
+    system = system_prompt(s, ctx, websuche, mem_ok)
     tf, full = TagFilter(), []
     try:
         if anbieter == "ollama":
@@ -944,6 +1073,8 @@ def run_chat(payload, emit):
 
 # ---------------------------------------------------------------- Sprachausgabe ElevenLabs
 def eleven_tts(s, text):
+    if s.get("strikt_lokal"):
+        raise KIError("Strikt lokal ist an: ElevenLabs ist gesperrt.")
     key, vid = s.get("eleven_key"), s.get("eleven_voice")
     if not key or not vid:
         raise KIError("ElevenLabs: Schlüssel oder Stimmen-ID fehlt.")

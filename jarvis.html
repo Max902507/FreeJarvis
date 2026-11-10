@@ -30,9 +30,11 @@
   #vx-sig{position:fixed;left:16px;bottom:16px;width:300px;height:92px;z-index:5;border-radius:12px;padding:8px 10px}
   #vx-sig small{font-family:var(--mono);font-size:9px;letter-spacing:.2em;color:var(--mut)}
   #vx-sig canvas{width:100%;height:66px;display:block}
-  @media (max-width:1380px){#vx-top .opt{display:none}}
+  @media (max-width:1720px){#vx-top .opt2{display:none}}
+  @media (max-width:1600px){#vx-top .opt{display:none}}
+  @media (max-width:1250px){#vx-top{display:none}}
   @media (max-width:1180px){#vx-feed,#vx-sig{display:none}}
-  @media (max-width:860px){#vx-top{display:none}#vx-title{top:62px}#vx-title h1{font-size:22px}}
+  @media (max-width:860px){#vx-title{top:62px}#vx-title h1{font-size:22px}}
 </style>
 </head>
 <body>
@@ -43,7 +45,7 @@
   <div class="opt"><small>DATUM</small><b id="vxDate">--</b></div>
   <div><small>CPU</small><b id="vxCpu">—</b></div>
   <div class="opt"><small>RAM</small><b id="vxRam">—</b></div>
-  <div><small>KI-KERN</small><b id="vxModel">—</b></div>
+  <div class="opt2"><small>KI-KERN</small><b id="vxModel">—</b></div>
 </div>
 <div id="vx-title"><h1 id="vxName">J.A.R.V.I.S.</h1><p>Vortex · Neuronale Schnittstelle</p><div class="st" id="vxStats">MODULE 6 · EREIGNISSE 0</div></div>
 <div id="vx-feed" class="jv-glass"><h4>AKTIVITÄT <em id="vxCount">0</em></h4><div id="vxFeed"></div></div>

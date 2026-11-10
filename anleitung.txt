@@ -1,5 +1,5 @@
 =====================================================================
-  JARVIS · YouTube-Edition 1.0 · ANLEITUNG
+  JARVIS · YouTube-Edition 1.1 · ANLEITUNG
 =====================================================================
 
 INHALT
@@ -17,8 +17,9 @@ INHALT
   12. Die 7 Oberflächen
   13. Ordner und Dateien
   14. FEHLERBEHEBUNG (auch: Wechsel von Teil 1 zu Teil 2)
-  15. Sicherheit
-  16. Für Bastler: eigene Oberfläche bauen
+  15. DATENSCHUTZ: WAS VERLÄSST MEINEN PC?
+  16. Sicherheit
+  17. Für Bastler: eigene Oberfläche bauen
 
 
 ---------------------------------------------------------------------
@@ -248,6 +249,9 @@ Jarvis merkt sich Dinge über dich in der Datei  gedaechtnis.json.
     immer, egal welches Modell.
   - In den Einstellungen siehst du alle Einträge, kannst neue anlegen
     und einzelne oder alle löschen.
+  - Bei einer Cloud-KI bleibt das Gedächtnis standardmäßig auf deinem PC
+    und wird NICHT mitgeschickt. Ändern: Einstellungen -> Datenschutz
+    (siehe Abschnitt 15).
 
 
 ---------------------------------------------------------------------
@@ -333,6 +337,9 @@ Für Programmierer, wo was im Code steht (server.py):
   stream_claude()   Anbindung Claude  (POST /v1/messages)
   stream_openai()   Anbindung OpenAI-kompatibel (POST /chat/completions)
   route()           erkennt Befehle (Timer, Webseite, Briefing ...)
+  privat_erkennen() erkennt private Daten für die Privat-Weiche
+  run_chat()        entscheidet, ob eine Nachricht lokal oder in die
+                    Cloud geht
   system_prompt()   die Persönlichkeit von Jarvis
   DEFAULTS          alle Einstellungen mit Standardwerten
 Anderer Port: Umgebungsvariable JARVIS_PORT setzen (Standard 5050).
@@ -414,7 +421,79 @@ Adresse im schwarzen Fenster an.
 
 
 ---------------------------------------------------------------------
-15. SICHERHEIT
+15. DATENSCHUTZ: WAS VERLÄSST MEINEN PC?
+---------------------------------------------------------------------
+Kurz gesagt: Mit Ollama bleiben die KI-Anfragen auf deinem PC. Mit
+Claude oder OpenAI gehen sie an den Anbieter. Jarvis hilft dir dabei,
+private Dinge trotzdem lokal zu halten.
+
+Oben rechts neben der Modellauswahl zeigt eine Anzeige, wo du gerade
+bist:
+  LOKAL         die KI läuft auf deinem PC (Ollama, LM Studio)
+  CLOUD         die KI läuft beim Anbieter (Claude, OpenAI ...)
+  STRIKT LOKAL  nichts verlässt den PC
+  🔒 LOKAL BEANTWORTET   eine private Nachricht wurde lokal beantwortet
+Ein Klick darauf öffnet die Datenschutz-Einstellungen.
+
+Einstellungen -> Datenschutz:
+
+  PRIVAT-WEICHE (Standard: an)
+  Ist eine Cloud-KI gewählt und deine Nachricht enthält private Daten,
+  beantwortet Ollama sie stattdessen lokal. Im Chat steht dann:
+     "🔒 Erkannt: Telefonnummer · lokal beantwortet von ..."
+  Erkannt werden:
+     Telefonnummern, E-Mail-Adressen, IBAN, Kartennummern, Adressen,
+     Postleitzahl mit Ort, API-Schlüssel, und Wörter wie Passwort, PIN,
+     TAN, Diagnose, Arzt, Medikament, Kontostand, Gehalt, Steuer-ID,
+     Ausweisnummer.
+     Außerdem alles, was mit "privat:" beginnt, z.B.
+        privat: Wie spreche ich das Thema mit meinem Chef an?
+     und deine EIGENEN STICHWÖRTER (z.B. Namen aus der Familie).
+  Läuft Ollama nicht, schickt Jarvis die Nachricht NICHT in die Cloud,
+  sondern sagt Bescheid. Mit "Trotzdem an die Cloud senden" kannst du
+  sie bewusst doch schicken.
+  Private Nachrichten und ihre Antworten werden auch später nicht als
+  Gesprächsverlauf an die Cloud geschickt.
+
+  EHRLICH: Die Erkennung arbeitet mit Mustern und Wortlisten. Nummern,
+  E-Mails und IBANs findet sie zuverlässig. Einen Satz wie "meiner
+  Mutter geht es schlecht" erkennt sie nicht sicher. Für so etwas
+  "privat:" davorschreiben oder gleich lokal arbeiten.
+
+  GEDÄCHTNIS AN CLOUD-KI SENDEN (Standard: aus)
+  Aus: Dein Gedächtnis bleibt auf dem PC. Claude/OpenAI kennen deine
+  Notizen dann nicht, sie können z.B. beim Briefing nicht sagen, was
+  heute ansteht. "Merk dir ..." und "Vergiss ..." funktionieren
+  trotzdem, Jarvis erledigt sie lokal und schickt nichts weg.
+  An: Das Gedächtnis geht bei JEDER Anfrage an den Cloud-Anbieter mit.
+
+  STRIKT LOKAL (Standard: aus)
+  Nichts verlässt deinen PC. Gesperrt werden: Claude, OpenAI, ElevenLabs,
+  Wetter, Websuche und die Spracheingabe des Browsers. Jarvis nutzt nur
+  Ollama und nur Stimmen, die auf deinem PC installiert sind.
+  Du musst dann tippen.
+
+Was in den anderen Modi den PC verlässt, auch mit Ollama:
+  - SPRACHEINGABE: Die Spracherkennung von Chrome und Edge läuft über
+    einen Online-Dienst des Browsers (Chrome: Google, Edge: Microsoft).
+    Wer das nicht will: tippen oder "Strikt lokal".
+  - STIMME: Mit ElevenLabs geht der gesprochene Text an ElevenLabs.
+    Browser-Stimmen mit "Online" oder "Natural" im Namen laufen über
+    Server von Microsoft bzw. Google. Die Windows-Stimmen ohne diesen
+    Zusatz laufen lokal.
+  - WETTER: Nur der Ortsname geht an Open-Meteo.
+  - WEBSUCHE (nur Claude): Claude sucht bei Bedarf im Web.
+
+Unter Einstellungen -> Datenschutz -> "Was verlässt gerade deinen PC?"
+siehst du das live für deine aktuellen Einstellungen.
+
+Was Claude, OpenAI und Co. mit den Daten machen, regeln deren
+Datenschutz- und Nutzungsbedingungen. Die solltest du lesen, bevor du
+dort Persönliches eingibst.
+
+
+---------------------------------------------------------------------
+16. SICHERHEIT
 ---------------------------------------------------------------------
   - Jarvis ist nur von deinem eigenen PC aus erreichbar (127.0.0.1).
     Andere Geräte im Netzwerk kommen nicht dran.
@@ -426,12 +505,11 @@ Adresse im schwarzen Fenster an.
   - Im Stream: Einstellungen nicht offen zeigen, wenn Schlüssel
     eingetragen sind. Angezeigt werden zwar nur die letzten 4 Zeichen,
     aber sicher ist sicher.
-  - Bei Ollama bleibt alles auf deinem PC. Bei Claude/OpenAI gehen
-    deine Nachrichten und dein Gedächtnis an den jeweiligen Anbieter.
+  - Was bei welcher Einstellung den PC verlässt: siehe Abschnitt 15.
 
 
 ---------------------------------------------------------------------
-16. FÜR BASTLER: EIGENE OBERFLÄCHE BAUEN
+17. FÜR BASTLER: EIGENE OBERFLÄCHE BAUEN
 ---------------------------------------------------------------------
 Kopiere eine Datei aus "oberflaechen", z.B. band.html, und ändere den
 Teil in Jarvis.registerTheme({...}):

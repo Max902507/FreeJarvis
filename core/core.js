@@ -7,7 +7,7 @@
 (function () {
   "use strict";
   const J = window.Jarvis = {
-    version: "1.0", state: "idle", settings: null, theme: null, started: false, history: [], models: null,
+    version: "1.1", state: "idle", settings: null, theme: null, started: false, history: [], models: null,
     S: { level: 0, mic: 0, speak: 0, think: 0, listen: 0, pulse: 0, t: 0, dt: 0.016 }, _ls: {}
   };
   J.on = (ev, fn) => { (J._ls[ev] = J._ls[ev] || []).push(fn); };
@@ -64,7 +64,7 @@
     document.body.insertAdjacentHTML("afterbegin", '<canvas id="jv-canvas"></canvas>');
     document.body.insertAdjacentHTML("beforeend", `
 <div id="jv-tl"><button class="jv-btn" id="jv-setbtn" title="Einstellungen">${ICON.gear}<span class="txt">Einstellungen</span></button></div>
-<div id="jv-tr"><div id="jv-model" class="jv-glass" title="Welche KI antwortet"><i class="dot"></i><span class="lbl">KI</span><select id="jv-msel"><option>lädt …</option></select></div></div>
+<div id="jv-tr"><button id="jv-priv" class="jv-glass" title="Datenschutz"><i></i><span>LOKAL</span></button><div id="jv-model" class="jv-glass" title="Welche KI antwortet"><i class="dot"></i><span class="lbl">KI</span><select id="jv-msel"><option>lädt …</option></select></div></div>
 <div id="jv-timers"></div>
 <div id="jv-toast" class="jv-glass"></div>
 <div id="jv-brief" class="jv-glass"></div>
@@ -88,6 +88,7 @@
     $("jv-stop").onclick = () => { abortChat(); stopSpeaking(); setState("idle"); };
     $("jv-mic").onclick = micButton;
     $("jv-msel").onchange = onModelPick;
+    $("jv-priv").onclick = () => openSettings("privat");
     $("jv-intro").onclick = start;
     document.querySelectorAll("#jv-tl button,#jv-bar button").forEach(b => b.addEventListener("click", () => b.blur()));
     document.addEventListener("keyup", e => { if (e.code === "Space" && (document.activeElement || {}).tagName === "BUTTON") e.preventDefault(); });
@@ -123,6 +124,7 @@
     let t = STATE_TXT[J.state] || "";
     if (J.state === "idle" && MIC.running) t = J.settings && J.settings.weckwort_an ? `Bereit · sag „${J.settings.weckwort} …“` : "Bereit · ich höre zu";
     if (J.state === "idle" && !MIC.running && J.settings && J.settings.mikro === "aus" && SR) t = "Bereit · Leertaste oder Mikro zum Sprechen";
+    if (J.state === "idle" && J.settings && J.settings.strikt_lokal) t = "Bereit · strikt lokal · bitte tippen";
     const el = $("jv-statetxt"); if (el) el.textContent = t;
   }
 
@@ -155,7 +157,8 @@
     if (STOP_RE.test(text)) { abortChat(); stopSpeaking(); setState("idle"); return; }
     abortChat(); stopSpeaking();
     if (!opt.hidden) addMsg("user", text);
-    J.history.push({ role: "user", content: text }); saveHistory();
+    const userEntry = { role: "user", content: text }; J.history.push(userEntry); saveHistory();
+    let privat = false;
     $("jv-live").textContent = "";
     setState("thinking"); J.emit("module", "ki");
     const ctrl = new AbortController(); chatCtrl = ctrl;
@@ -164,7 +167,7 @@
     SPEAK.reset();
     const after = [];
     try {
-      const r = await fetch("/api/chat", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ messages: J.history.slice(-16) }), signal: ctrl.signal });
+      const r = await fetch("/api/chat", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ messages: J.history.slice(-16), erzwingen_cloud: !!opt.force }), signal: ctrl.signal });
       if (!r.ok || !r.body) throw new Error("Server antwortet nicht (HTTP " + r.status + ")");
       const rd = r.body.getReader(), dec = new TextDecoder(); let buf = "";
       for (; ;) {
@@ -176,6 +179,20 @@
           if (ev.t === "delta") { full += ev.text; bubble.textContent = full; $("jv-log").scrollTop = 1e9; SPEAK.feed(ev.text); }
           else if (ev.t === "action") doAction(ev, bubble, after);
           else if (ev.t === "model") showModelPill(ev.anbieter, ev.modell);
+          else if (ev.t === "privat") {
+            if (ev.weiter === "lokal") {
+              privat = true; userEntry.privat = true; saveHistory();
+              addMsg("note", ev.modell === "ohne KI" ? "🔒 Gedächtnis-Befehl lokal erledigt · nichts an die Cloud gesendet" : "🔒 Erkannt: " + ev.gruende.join(", ") + " · lokal beantwortet von " + ev.modell + " · nichts an die Cloud gesendet");
+              $("jv-log").appendChild(bubble); privFlash("LOKAL BEANTWORTET"); J.emit("event", { kind: "privat", text: "Privat: " + ev.gruende.join(", ") });
+            } else {
+              errored = true; bubble.classList.add("err"); bubble.textContent = ev.message;
+              J.history = J.history.filter(m => m !== userEntry); saveHistory();
+              const b = document.createElement("a"); b.className = "jv-link"; b.href = "#"; b.textContent = "Trotzdem an die Cloud senden";
+              b.onclick = e => { e.preventDefault(); b.remove(); send(text, { force: true, hidden: true }); };
+              setTimeout(() => { bubble.appendChild(document.createElement("br")); bubble.appendChild(b); }, 30);
+              privFlash("BLOCKIERT"); J.emit("event", { kind: "privat", text: "Nicht gesendet: " + ev.gruende.join(", ") });
+            }
+          }
           else if (ev.t === "error") { errored = true; bubble.classList.add("err"); bubble.textContent = ev.message; J.emit("event", { kind: "fehler", text: ev.message }); }
         }
       }
@@ -190,7 +207,7 @@
       if (!bubble.textContent) bubble.textContent = "Fehler.";
       SPEAK.reset(); SPEAK.say("Das hat nicht geklappt. Die Details stehen im Chat.");
     } else {
-      if (!full.trim()) { bubble.remove(); } else { J.history.push({ role: "assistant", content: full.trim() }); saveHistory(); }
+      if (!full.trim()) { bubble.remove(); } else { J.history.push(privat ? { role: "assistant", content: full.trim(), privat: true } : { role: "assistant", content: full.trim() }); saveHistory(); }
       SPEAK.feed("", true);
     }
     SPEAK.onDone(() => after.forEach(f => f()));
@@ -266,7 +283,7 @@
       return t.replace(/```[\s\S]*?```/g, " ").replace(/\[([^\]]*)\]\([^)]*\)/g, "$1").replace(/https?:\/\/\S+/g, "")
         .replace(/[*_#`>|~]+/g, "").replace(/[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}\u{FE0F}]/gu, "").replace(/\s+/g, " ").trim();
     }
-    function mode() { return (J.settings && J.settings.stimme) || "browser"; }
+    function mode() { const m = (J.settings && J.settings.stimme) || "browser"; return (m === "elevenlabs" && J.settings.strikt_lokal) ? "browser" : m; }
     function enqueue(text) {
       const t = clean(text); if (!t || !/[\p{L}\p{N}]/u.test(t)) return;
       spoke = true; const item = { text: t };
@@ -326,8 +343,9 @@
     if (window.speechSynthesis) { loadVoices(); speechSynthesis.onvoiceschanged = loadVoices; }
     function pickVoice() {
       const want = J.settings && J.settings.browser_stimme, lang = ((J.settings && J.settings.sprache) || "de-DE").slice(0, 2);
-      if (want) { const v = VOICES.find(v => v.name === want); if (v) return v; }
-      const l = VOICES.filter(v => (v.lang || "").toLowerCase().startsWith(lang));
+      const pool = (J.settings && J.settings.strikt_lokal) ? VOICES.filter(v => v.localService) : VOICES;
+      if (want) { const v = pool.find(v => v.name === want); if (v) return v; }
+      const l = pool.filter(v => (v.lang || "").toLowerCase().startsWith(lang));
       return l.find(v => /natural|online|neural/i.test(v.name)) || l.find(v => /google/i.test(v.name)) || l[0] || null;
     }
     J.voices = () => VOICES; J.pickVoice = pickVoice;
@@ -378,7 +396,7 @@
   const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
   const MIC = { rec: null, running: false, starting: false, paused: false, oneShot: false, restarts: [], wakeUntil: 0, blocked: false, cont: null, lvl: null };
   function micShouldRun() {
-    if (!SR || !J.started || MIC.blocked || !J.settings) return false;
+    if (!SR || !J.started || MIC.blocked || !J.settings || J.settings.strikt_lokal) return false;
     if ($("jv-set") && $("jv-set").classList.contains("on")) return false;
     if (MIC.oneShot) return J.state !== "thinking" && J.state !== "speaking";
     const m = J.settings.mikro;
@@ -402,6 +420,7 @@
   }
   function micButton() {
     if (!SR) { toast("Spracherkennung gibt es nur in Chrome oder Edge. Schreiben geht überall.", true, 5000); return; }
+    if (J.settings.strikt_lokal) { toast("Strikt lokal ist an: Die Spracheingabe des Browsers läuft über einen Online-Dienst und ist deshalb aus. Bitte tippen.", true, 6000); return; }
     if (!J.started) start();
     if (MIC.blocked) { MIC.blocked = false; }
     if (J.state === "speaking") { stopSpeaking(); }
@@ -488,7 +507,8 @@
       for (const p of ["ollama", "claude", "openai"]) {
         const L = r.liste[p] || { ok: false, models: [] };
         h += `<optgroup label="${PROV[p]}">`;
-        if (L.ok) h += L.models.map(m => `<option value="${p}|${esc(m)}">${esc(m)}</option>`).join("");
+        const lock = J.settings && J.settings.strikt_lokal && isCloud(p);
+        if (L.ok) h += L.models.map(m => `<option value="${p}|${esc(m)}"${lock ? " disabled" : ""}>${esc(m)}${lock ? " · gesperrt (strikt lokal)" : ""}</option>`).join("");
         else h += `<option disabled value="">– ${esc((L.fehler || "nicht verfügbar").slice(0, 60))}</option>`;
         h += "</optgroup>";
       }
@@ -499,17 +519,56 @@
       const ok = !!r.modell && (r.liste[r.anbieter] || {}).ok;
       box.classList.toggle("ok", ok); box.classList.toggle("bad", !ok);
       box.title = ok ? "Aktiv: " + PROV[r.anbieter] + " · " + r.modell : ((r.liste[r.anbieter] || {}).fehler || "Keine KI verfügbar. Einstellungen öffnen.");
-      J.emit("models", r);
+      J.emit("models", r); privBadge();
       return r;
     } catch (e) { box.classList.add("bad"); sel.innerHTML = "<option>Server nicht erreichbar</option>"; return null; }
   }
   J.loadModels = loadModels;
   function showModelPill(a, m) { J.current = { anbieter: a, modell: m }; J.emit("model", J.current); }
+
+  /* =============================================================== Datenschutz-Anzeige */
+  function isCloud(p, st) {
+    st = st || J.settings || {};
+    if (p === "claude") return true;
+    if (p === "openai") { const u = (st.openai_url || "").toLowerCase(); return !(u.includes("localhost") || u.includes("127.0.0.1")); }
+    return false;
+  }
+  J.isCloud = isCloud;
+  let privT = 0;
+  function privBadge() {
+    const b = $("jv-priv"); if (!b || !J.settings) return;
+    const st = J.settings, cloud = isCloud(st.anbieter) && !st.strikt_lokal;
+    b.className = "jv-glass " + (st.strikt_lokal ? "strikt" : cloud ? "cloud" : "lokal");
+    if (!privT) b.querySelector("span").textContent = st.strikt_lokal ? "STRIKT LOKAL" : cloud ? "CLOUD" : "LOKAL";
+    b.title = st.strikt_lokal ? "Strikt lokal: nichts verlässt deinen PC (nur Ollama, keine Online-Dienste)"
+      : cloud ? "Cloud-KI aktiv: Nachrichten gehen an " + (st.anbieter === "claude" ? "Anthropic" : "den API-Anbieter") + "."
+        + (st.gedaechtnis_cloud ? " Das Gedächtnis wird mitgeschickt." : " Das Gedächtnis bleibt lokal.") + (st.privat_weiche ? " Private Nachrichten gehen an Ollama." : "")
+        : "Lokale KI: die Anfragen bleiben auf deinem PC.";
+  }
+  function privFlash(t) {
+    const b = $("jv-priv"); if (!b) return;
+    clearTimeout(privT); b.querySelector("span").textContent = "🔒 " + t; b.classList.add("flash");
+    privT = setTimeout(() => { privT = 0; b.classList.remove("flash"); privBadge(); }, 4500);
+  }
+  function privList(st) {
+    const cloud = isCloud(st.anbieter) && !st.strikt_lokal, prov = st.anbieter === "claude" ? "Anthropic (Claude)" : "deinen API-Anbieter";
+    const L = [];
+    L.push(["KI-Anfragen", cloud ? "gehen an " + prov + ": deine Nachricht und die letzten Nachrichten, private ausgenommen" : "bleiben auf deinem PC (Ollama)", cloud]);
+    L.push(["Gedächtnis", cloud && st.gedaechtnis_cloud ? "wird bei jeder Anfrage an " + prov + " mitgeschickt" : "bleibt auf deinem PC", cloud && st.gedaechtnis_cloud]);
+    if (cloud) L.push(["Private Nachrichten", st.privat_weiche ? "werden erkannt und lokal von Ollama beantwortet. Läuft Ollama nicht, wird nichts gesendet." : "gehen ebenfalls in die Cloud", !st.privat_weiche]);
+    L.push(["Spracheingabe", st.strikt_lokal ? "aus (bitte tippen)" : "läuft über einen Online-Dienst des Browsers (Chrome: Google, Edge: Microsoft)" + (st.mikro === "aus" ? ", aber nur, wenn du den Mikro-Knopf drückst" : ""), !st.strikt_lokal]);
+    const st2 = st.strikt_lokal ? "nur Stimmen, die auf deinem PC installiert sind" : st.stimme === "elevenlabs" ? "der gesprochene Text geht an ElevenLabs" : st.stimme === "aus" ? "aus" : "Browser-Stimme. Achtung: Stimmen mit „Online“ oder „Natural“ im Namen laufen über Server von Microsoft bzw. Google";
+    L.push(["Sprachausgabe", st2, !st.strikt_lokal && st.stimme !== "aus"]);
+    L.push(["Wetter", st.strikt_lokal ? "aus" : "nur der Ortsname geht an Open-Meteo", !st.strikt_lokal]);
+    if (cloud && st.anbieter === "claude" && st.websuche) L.push(["Websuche", "Claude sucht bei Bedarf im Web", true]);
+    return '<div class="jv-list">' + L.map(([a, b, out]) => `<div class="jv-li"><span><b style="font-weight:600">${a}</b><br><small style="white-space:normal">${esc(b)}</small></span><small class="${out ? "po" : "pl"}">${out ? "verlässt den PC" : "bleibt lokal"}</small></div>`).join("") + "</div>";
+  }
   async function onModelPick() {
     const v = $("jv-msel").value;
     if (v === "__reload") { $("jv-msel").innerHTML = "<option>suche …</option>"; await loadModels(); toast("Modelle aktualisiert"); return; }
     const [a, m] = v.split("|"); if (!m) return;
-    J.settings = await api("/api/settings", { anbieter: a, modell: m });
+    J.settings = await api("/api/settings", a === "ollama" ? { anbieter: a, modell: m, lokal_modell: m } : { anbieter: a, modell: m });
+    privBadge();
     toast("Jetzt antwortet: " + m); $("jv-model").classList.add("ok"); $("jv-model").classList.remove("bad");
     J.emit("model", { anbieter: a, modell: m });
   }
@@ -565,7 +624,7 @@
   /* =============================================================== Einstellungen */
   const TABS = [["ki", "KI & Modelle", "M4 6h16M4 12h16M4 18h10"], ["stimme", "Stimme", "M4 10v4M8 7v10M12 4v16M16 7v10M20 10v4"], ["mikro", "Mikrofon", "M9 3h6v11H9zM5 11a7 7 0 0 0 14 0M12 18v3"],
   ["person", "Persönlichkeit", "M12 12a4 4 0 1 0 0-8 4 4 0 0 0 0 8zM4 21a8 8 0 0 1 16 0"], ["mem", "Gedächtnis", "M12 3a7 7 0 0 0-4 12.7V19h8v-3.3A7 7 0 0 0 12 3zM9 22h6"],
-  ["auto", "Automation", "M13 2 4 14h7l-1 8 9-12h-7z"], ["look", "Oberfläche", "M3 4h18v12H3zM8 20h8M12 16v4"], ["hilfe", "Hilfe", "M12 22a10 10 0 1 0 0-20 10 10 0 0 0 0 20zM9.1 9a3 3 0 0 1 5.8 1c0 2-3 3-3 3M12 17h0"]];
+  ["auto", "Automation", "M13 2 4 14h7l-1 8 9-12h-7z"], ["privat", "Datenschutz", "M12 2 4 5v6c0 5 3.4 9.4 8 11 4.6-1.6 8-6 8-11V5z"], ["look", "Oberfläche", "M3 4h18v12H3zM8 20h8M12 16v4"], ["hilfe", "Hilfe", "M12 22a10 10 0 1 0 0-20 10 10 0 0 0 0 20zM9.1 9a3 3 0 0 1 5.8 1c0 2-3 3-3 3M12 17h0"]];
   function sw(k, label) { return `<label class="sw"><input type="checkbox" data-k="${k}"><i></i><span>${label}</span></label>`; }
   function settingsHtml() {
     const nav = TABS.map((t, i) => `<button data-tab="${t[0]}" class="${i ? "" : "on"}"><svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="${t[2]}"/></svg><span>${t[1]}</span></button>`).join("");
@@ -641,6 +700,20 @@
 <div class="row" style="margin-top:16px"><label>Chatverlauf</label>${sw("chat_sichtbar", "Nachrichten über der Eingabe anzeigen")}</div>
 <div class="row"><label>Töne</label>${sw("sounds", "Kurze Töne bei Mikrofon und Timer")}</div>
 </section>
+<section class="tab" data-tab="privat"><h3>Datenschutz</h3><p class="hint">Bei Ollama bleiben die KI-Anfragen auf deinem PC. Bei Claude oder OpenAI gehen sie an den Anbieter. Hier legst du fest, was deinen PC verlassen darf.</p>
+<div class="box"><h4>Private Daten automatisch lokal</h4>
+<div class="row"><label>Privat-Weiche<small>wirkt, wenn eine Cloud-KI gewählt ist</small></label>${sw("privat_weiche", "Private Nachrichten an die lokale KI (Ollama) statt an die Cloud")}</div>
+<p class="hint" style="margin:-4px 0 10px">Erkannt werden: Telefonnummern, E-Mail-Adressen, IBAN, Kartennummern, Adressen, API-Schlüssel und Wörter wie Passwort, PIN, Diagnose, Kontostand oder Steuer-ID. Und alles, was mit „privat:“ beginnt. Die Erkennung arbeitet mit Mustern. Sie findet viel, aber nicht alles.</p>
+<div class="row"><label>Eigene Stichwörter<small>z.B. Namen aus der Familie, Projektnamen</small></label><textarea data-k="privat_woerter" placeholder="Anna, Projekt Falke, Hausbau"></textarea></div>
+<div class="row"><label>Lokales Modell für Privates</label><select data-k="lokal_modell" id="jv-lokalm"></select></div></div>
+<div class="box"><h4>Gedächtnis</h4>
+<div class="row"><label>An Cloud-KI senden</label>${sw("gedaechtnis_cloud", "Gedächtnis auch an Claude/OpenAI schicken")}</div>
+<p class="hint" style="margin:-4px 0 0">Aus = Das Gedächtnis bleibt auf deinem PC. Die Cloud-KI kennt dann deine Notizen nicht. „Merk dir …“ und „Vergiss …“ funktionieren trotzdem, sie werden lokal erledigt.</p></div>
+<div class="box"><h4>Strikt lokal</h4>
+<div class="row"><label>Nichts verlässt den PC</label>${sw("strikt_lokal", "Nur Ollama, keine Online-Dienste")}</div>
+<p class="hint" style="margin:-4px 0 0">Sperrt Claude, OpenAI, ElevenLabs, Wetter, Websuche und die Spracheingabe des Browsers. Zum Sprechen werden nur Stimmen genutzt, die auf deinem PC installiert sind.</p></div>
+<div class="box"><h4>Was verlässt gerade deinen PC?</h4><div id="jv-privlist"></div></div>
+</section>
 <section class="tab" data-tab="hilfe"><h3>Hilfe</h3><p class="hint">Die ausführliche Anleitung steht in <b>anleitung.txt</b> im Jarvis-Ordner.</p>
 <div class="jv-cmds">
 <div><b>Keine KI oben rechts?</b><span>Ollama starten oder Schlüssel unter „KI & Modelle“ eintragen, dann „↻ Modelle neu suchen“.</span></div>
@@ -661,6 +734,11 @@
     sel.value = cur; if (sel.value !== cur) sel.value = "";
   }
   J.on("voices", fillVoices);
+  function fillLokal() {
+    const sel = $("jv-lokalm"); if (!sel) return;
+    const L = J.models && J.models.liste && J.models.liste.ollama;
+    sel.innerHTML = '<option value="">Automatisch (zuletzt gewähltes Ollama-Modell)</option>' + (L && L.ok ? L.models.map(m => `<option value="${esc(m)}">${esc(m)}</option>`).join("") : '<option value="" disabled>Ollama nicht erreichbar</option>');
+  }
   function renderRoutines(list) {
     const box = $("jv-routines"); if (!box) return;
     const opts = [["briefing", "Weck-Briefing"], ["webseite", "Webseite öffnen"], ["sagen", "Text sagen"], ["oberflaeche", "Oberfläche wechseln"], ["timer", "Timer (Minuten)"]];
@@ -711,7 +789,9 @@
   function openSettings(tab) {
     const box = $("jv-set");
     box.innerHTML = settingsHtml();
-    bindValues(box); fillVoices(); renderRoutines(J.settings.routinen || []); renderMemory(); renderThemes();
+    fillLokal(); bindValues(box); fillVoices(); renderRoutines(J.settings.routinen || []); renderMemory(); renderThemes();
+    const upd = () => { const pl = $("jv-privlist"); if (pl) pl.innerHTML = privList(Object.assign({}, J.settings, readValues(box))); };
+    box.addEventListener("change", upd); upd();
     box.classList.add("on"); micSync();
     box.onclick = e => { if (e.target === box) closeSettings(); };
     box.querySelectorAll("[data-close]").forEach(b => b.onclick = closeSettings);
@@ -748,11 +828,11 @@
     $("jv-save").onclick = async () => {
       const res = $("jv-saveres"); res.className = "res"; res.textContent = "speichere …";
       try {
-        const before = JSON.stringify([J.settings.anbieter, J.settings.ollama_url, J.settings.claude_key, J.settings.openai_url, J.settings.openai_key]);
+        const before = JSON.stringify([J.settings.anbieter, J.settings.ollama_url, J.settings.claude_key, J.settings.openai_url, J.settings.openai_key, J.settings.strikt_lokal]);
         J.settings = await api("/api/settings", readValues(box));
         applySettings();
         res.className = "res ok"; res.textContent = "✓ gespeichert";
-        if (before !== JSON.stringify([J.settings.anbieter, J.settings.ollama_url, J.settings.claude_key, J.settings.openai_url, J.settings.openai_key])) loadModels();
+        if (before !== JSON.stringify([J.settings.anbieter, J.settings.ollama_url, J.settings.claude_key, J.settings.openai_url, J.settings.openai_key, J.settings.strikt_lokal])) loadModels();
         setTimeout(closeSettings, 450);
       } catch (e) { res.className = "res bad"; res.textContent = "✗ " + e.message; }
     };
@@ -764,7 +844,7 @@
     const inp = $("jv-input"); if (inp) inp.placeholder = "Schreib " + (J.settings.name || "Jarvis") + " etwas …";
     if (MIC.rec && (MIC.cont !== (J.settings.mikro !== "aus") || MIC.rec.lang !== J.settings.sprache)) { micStop(); MIC.rec = null; }
     MIC.paused = false;
-    micSync(); J.emit("settings", J.settings);
+    micSync(); privBadge(); J.emit("settings", J.settings);
   }
 
   /* =============================================================== Start */

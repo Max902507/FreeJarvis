@@ -1,0 +1,53 @@
+{
+  "name": "Jarvis",
+  "nutzer": "",
+  "persona": "",
+  "anbieter": "ollama",
+  "modell": "",
+  "ollama_url": "http://localhost:11434",
+  "claude_key": "",
+  "openai_key": "",
+  "openai_url": "https://api.openai.com/v1",
+  "websuche": true,
+  "antwortlaenge": "kurz",
+  "stimme": "browser",
+  "browser_stimme": "",
+  "tempo": 1.0,
+  "tonhoehe": 1.0,
+  "lautstaerke": 1.0,
+  "eleven_key": "",
+  "eleven_voice": "",
+  "eleven_modell": "eleven_multilingual_v2",
+  "mikro": "nach_antwort",
+  "weckwort_an": false,
+  "weckwort": "Jarvis",
+  "sprache": "de-DE",
+  "auto_merken": true,
+  "ort": "Berlin",
+  "briefing_beim_start": false,
+  "oberflaeche": "vortex",
+  "chat_sichtbar": true,
+  "sounds": true,
+  "strikt_lokal": false,
+  "privat_weiche": true,
+  "gedaechtnis_cloud": false,
+  "privat_woerter": "",
+  "lokal_modell": "",
+  "routinen": [
+    {
+      "satz": "guten morgen",
+      "aktion": "briefing",
+      "wert": ""
+    },
+    {
+      "satz": "öffne youtube",
+      "aktion": "webseite",
+      "wert": "https://www.youtube.com"
+    },
+    {
+      "satz": "pause machen",
+      "aktion": "timer",
+      "wert": "15"
+    }
+  ]
+}
