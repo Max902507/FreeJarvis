@@ -494,6 +494,23 @@ dort Persönliches eingibst.
 
 ---------------------------------------------------------------------
 16. SICHERHEIT
+
+  NEU IN 1.2: Schutz vor fremden Webseiten
+  ------------------------------------------------------------------
+  Jarvis ist ein kleiner Server auf deinem PC. Bis Version 1.1 konnte
+  eine fremde Webseite, die du im selben Browser offen hattest, ihm
+  heimlich Befehle schicken, zum Beispiel die Adresse des KI-Dienstes
+  umbiegen. Dein API-Schlüssel wäre dann dorthin gegangen.
+
+  Ab 1.2 prüft der Server zusätzlich:
+    - die Adresse (Host) muss genau der Port sein, auf dem Jarvis läuft
+    - ein mitgeschickter Origin muss ebenfalls dazu passen
+    - jede ändernde Anfrage braucht die Kopfzeile  X-Jarvis: 1
+      (die darf eine fremde Seite im Browser gar nicht setzen)
+    - CORS-Vorabfragen werden abgelehnt
+
+  Gemeldet wurde die Lücke von Pascal. Danke dafür.
+
 ---------------------------------------------------------------------
   - Jarvis ist nur von deinem eigenen PC aus erreichbar (127.0.0.1).
     Andere Geräte im Netzwerk kommen nicht dran.

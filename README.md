@@ -1,4 +1,4 @@
-# JARVIS · YouTube-Edition
+# JARVIS · YouTube-Edition 1.2
 
 Persönlicher KI-Assistent im Browser, mit Stimme, Gedächtnis, Automation und 7 animierten Oberflächen.
 
@@ -14,6 +14,10 @@ Persönlicher KI-Assistent im Browser, mit Stimme, Gedächtnis, Automation und 7
 4. Oben links **Einstellungen** → KI einrichten
 
 Die komplette Anleitung mit Fehlerbehebung steht in **`anleitung.txt`**.
+
+## Schutz vor fremden Webseiten (ab 1.2)
+
+Der Server ist nur über localhost erreichbar. Zusätzlich muss jede Anfrage an genau den Port gerichtet sein, auf dem Jarvis läuft, ein vorhandener `Origin` muss dazu passen, und jede schreibende Anfrage braucht die Kopfzeile `X-Jarvis: 1`; CORS-Vorabfragen werden mit 403 beantwortet. Damit kann keine fremde Webseite im selben Browser Einstellungen ändern oder das Gedächtnis löschen. (Bis Version 1.1 war das möglich — danke an Pascal für den Hinweis.)
 
 ## Oberflächen
 

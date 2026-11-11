@@ -27,11 +27,12 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 if sys.version_info < (3, 8):
     sys.exit("Python 3.8 oder neuer wird benötigt.")
 
-VERSION = "1.1"
+VERSION = "1.2"
 BASE = os.path.dirname(os.path.realpath(__file__))
 SETTINGS_FILE = os.path.join(BASE, "einstellungen.json")
 MEMORY_FILE = os.path.join(BASE, "gedaechtnis.json")
 PORT = int(os.environ.get("JARVIS_PORT", "5050"))
+RUN_PORT = PORT
 HOST = "127.0.0.1"
 LOCK = threading.Lock()
 SECRET = ("claude_key", "openai_key", "eleven_key")
@@ -1105,6 +1106,54 @@ class Handler(BaseHTTPRequestHandler):
     def local(self):
         return self.client_address[0] in ("127.0.0.1", "::1", "::ffff:127.0.0.1")
 
+    @staticmethod
+    def _eigene_adresse(wert, port_noetig):
+        """Prueft 'host:port' bzw. eine Origin-URL auf localhost + eigenen Port."""
+        if not wert:
+            return False
+        if "//" in wert:
+            u = urllib.parse.urlparse(wert)
+            if u.scheme not in ("http", "https"):
+                return False
+            host, port = u.hostname, u.port
+        else:
+            rest = wert.strip()
+            if rest.startswith("["):
+                ende = rest.find("]")
+                if ende < 0:
+                    return False
+                host, nach = rest[1:ende], rest[ende + 1:]
+            else:
+                host, _, nach = rest.partition(":")
+                nach = ":" + nach if nach else ""
+            port = None
+            if nach.startswith(":"):
+                if not nach[1:].isdigit():
+                    return False
+                port = int(nach[1:])
+        if (host or "").lower() not in ("localhost", "127.0.0.1", "::1"):
+            return False
+        if port is None:
+            return not port_noetig
+        return port == RUN_PORT
+
+    def erlaubt(self, schreibend):
+        """Schutz vor fremden Webseiten im selben Browser und vor DNS-Rebinding."""
+        if not self._eigene_adresse(self.headers.get("Host"), True):
+            return False
+        origin = self.headers.get("Origin")
+        if origin and not self._eigene_adresse(origin, True):
+            return False
+        if schreibend and (self.headers.get("X-Jarvis") or "").strip() != "1":
+            return False
+        return True
+
+    def verboten(self):
+        return self.send_json(403, {"error": "Anfrage abgelehnt: nur die eigene Jarvis-Oberflaeche darf das."})
+
+    def do_OPTIONS(self):
+        self.send_json(403, {"error": "Nicht erlaubt."})
+
     def send_json(self, code, obj):
         b = json.dumps(obj, ensure_ascii=False).encode("utf-8")
         self.send_response(code)
@@ -1115,6 +1164,9 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(b)
 
     def body(self):
+        ct = (self.headers.get("Content-Type") or "").split(";")[0].strip().lower()
+        if ct != "application/json":
+            return {}
         n = int(self.headers.get("Content-Length") or 0)
         if n <= 0 or n > 2_000_000:
             return {}
@@ -1127,6 +1179,8 @@ class Handler(BaseHTTPRequestHandler):
         path = urllib.parse.urlparse(self.path).path
         if not self.local():
             return self.send_json(403, {"error": "Nur vom eigenen Rechner erreichbar."})
+        if not self.erlaubt(False):
+            return self.verboten()
         if path == "/":
             s = load_settings()
             self.send_response(302)
@@ -1169,6 +1223,8 @@ class Handler(BaseHTTPRequestHandler):
         path = urllib.parse.urlparse(self.path).path
         if not self.local():
             return self.send_json(403, {"error": "Nur vom eigenen Rechner erreichbar."})
+        if not self.erlaubt(True):
+            return self.verboten()
         data = self.body()
         if path == "/api/settings":
             s = update_settings(data)
@@ -1226,6 +1282,7 @@ def main():
         try:
             srv = ThreadingHTTPServer((HOST, p), Handler)
             port = p
+            globals()["RUN_PORT"] = p
             break
         except OSError:
             continue

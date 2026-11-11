@@ -30,7 +30,7 @@
     set(k, v) { try { localStorage.setItem("jv-" + k, JSON.stringify(v)); } catch (e) { } }
   };
   async function api(path, body) {
-    const r = await fetch(path, body === undefined ? {} : { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+    const r = await fetch(path, body === undefined ? {} : { method: "POST", headers: { "Content-Type": "application/json", "X-Jarvis": "1" }, body: JSON.stringify(body) });
     let j = null; try { j = await r.json(); } catch (e) { }
     if (!r.ok) throw new Error((j && (j.error || j.fehler)) || ("HTTP " + r.status));
     return j;
@@ -167,7 +167,7 @@
     SPEAK.reset();
     const after = [];
     try {
-      const r = await fetch("/api/chat", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ messages: J.history.slice(-16), erzwingen_cloud: !!opt.force }), signal: ctrl.signal });
+      const r = await fetch("/api/chat", { method: "POST", headers: { "Content-Type": "application/json", "X-Jarvis": "1" }, body: JSON.stringify({ messages: J.history.slice(-16), erzwingen_cloud: !!opt.force }), signal: ctrl.signal });
       if (!r.ok || !r.body) throw new Error("Server antwortet nicht (HTTP " + r.status + ")");
       const rd = r.body.getReader(), dec = new TextDecoder(); let buf = "";
       for (; ;) {
@@ -289,7 +289,7 @@
       spoke = true; const item = { text: t };
       if (mode() === "elevenlabs") {
         const c = new AbortController(); ctrls.push(c);
-        item.blob = fetch("/api/tts", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ text: t }), signal: c.signal })
+        item.blob = fetch("/api/tts", { method: "POST", headers: { "Content-Type": "application/json", "X-Jarvis": "1" }, body: JSON.stringify({ text: t }), signal: c.signal })
           .then(async r => { if (!r.ok) { let m = "ElevenLabs-Fehler"; try { m = (await r.json()).error || m; } catch (e) { } throw new Error(m); } return r.blob(); });
         item.blob.catch(() => { });
       }
