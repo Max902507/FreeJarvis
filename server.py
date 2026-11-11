@@ -176,7 +176,34 @@ def _norm(t):
     return re.sub(r"[^a-z0-9äöüß ]", "", t.lower()).strip()
 
 
-def mem_add(text):
+FUELLWORT = set("der die das den dem des ein eine einen einem einer eines mein meine meinen meinem meiner dein deine "
+                "und oder dass bitte mal noch auch von vom zum zur mit für über notiz eintrag sache".split())
+KERN_OHNE = FUELLWORT | {"nutzer", "nutzerin", "habe", "haben", "möchte", "will", "wird", "sind"}
+
+
+def _kern(text):
+    """Die inhaltstragenden Wörter einer Notiz (zum Erkennen von Doppelungen)."""
+    return {w for w in _norm(text).split() if len(w) > 3 and w not in KERN_OHNE}
+
+
+def lernbar(text, s):
+    """Prüft eine automatische Merk-Zeile der KI: nur Aussagen über den Nutzer, nichts über die KI oder das Gespräch."""
+    n = _norm(text)
+    name = _norm(s.get("name") or "Jarvis")
+    if not _kern(n):
+        return False
+    if name and re.search(r"(?<![\wäöüß])" + re.escape(name) + r"(?![\wäöüß])", n):
+        return False
+    if re.match(r"(ich|du|wir|der assistent|die ki)\b", n):
+        return False
+    if re.search(r"\b(gefragt|fragt|fragte|wissen wollen|ausgerechnet|gerechnet|gebeten|bittet|begrüßt|bedankt|"
+                 r"kennengelernt|vorgestellt|kennt den nutzer|unbekannt|nichts|noch nicht|bisher|keine angaben?)\b", n):
+        return False
+    return True
+
+
+def mem_add(text, auto=False):
+    """auto=True: Eintrag stammt von der KI ([merken: ...]) und wird nur gespeichert, wenn er etwas Neues enthält."""
     text = re.sub(r"\s+", " ", str(text or "")).strip(" .,:;-")[:300]
     if len(text) < 3:
         return None
@@ -185,7 +212,11 @@ def mem_add(text):
         n = _norm(text)
         for it in items:
             if _norm(it.get("text", "")) == n:
-                return it
+                return None if auto else it
+        if auto:
+            k = _kern(text)
+            if not k or any(k <= _kern(it.get("text", "")) for it in items):
+                return None
         it = {"id": uuid.uuid4().hex[:8], "text": text[0].upper() + text[1:], "datum": datetime.date.today().isoformat()}
         items.append(it)
         mem_save(items[-300:])
@@ -198,10 +229,16 @@ def mem_delete(mid=None, match=None):
         if mid:
             keep = [i for i in items if i.get("id") != mid]
         else:
-            words = [w for w in _norm(match or "").split() if len(w) > 2]
+            words = [w for w in _norm(match or "").split() if len(w) > 2 and w not in FUELLWORT]
             if not words:
                 return 0
-            keep = [i for i in items if not all(w in _norm(i.get("text", "")) for w in words)]
+
+            def passt(it):
+                tw = _norm(it.get("text", "")).split()
+                t = " ".join(tw)
+                # Treffer auch bei Zusammensetzungen: "zahnarzttermin" findet die Notiz mit "zahnarzt"
+                return all(w in t or any(len(x) >= 5 and x not in FUELLWORT and x in w for x in tw) for w in words)
+            keep = [i for i in items if not passt(i)]
         n = len(items) - len(keep)
         mem_save(keep)
         return n
@@ -220,13 +257,37 @@ def mem_text(limit=4000):
 
 
 # ---------------------------------------------------------------- HTTP-Helfer
+def _ohne_ipv6_umweg(url):
+    """'localhost' wird zuerst nach ::1 aufgelöst. Hört der Dienst (z. B. Ollama) nur auf IPv4,
+    kostet das unter Windows rund 2 Sekunden pro Verbindung. Deshalb direkt 127.0.0.1 ansprechen."""
+    try:
+        u = urllib.parse.urlsplit(url)
+        if (u.hostname or "").lower() != "localhost" or "@" in u.netloc:
+            return url
+        netloc = "127.0.0.1" + (f":{u.port}" if u.port else "")
+        return urllib.parse.urlunsplit((u.scheme, netloc, u.path, u.query, u.fragment))
+    except ValueError:
+        return url
+
+
 def http(url, data=None, headers=None, timeout=20, method=None):
     body = json.dumps(data).encode("utf-8") if data is not None else None
     h = {"User-Agent": "Jarvis-YouTube-Edition/" + VERSION}
     if body is not None:
         h["Content-Type"] = "application/json"
     h.update(headers or {})
-    return urllib.request.urlopen(urllib.request.Request(url, data=body, headers=h, method=method), timeout=timeout)
+
+    def auf(ziel):
+        return urllib.request.urlopen(urllib.request.Request(ziel, data=body, headers=h, method=method), timeout=timeout)
+    schnell = _ohne_ipv6_umweg(url)
+    if schnell == url:
+        return auf(url)
+    try:
+        return auf(schnell)
+    except urllib.error.HTTPError:
+        raise
+    except OSError:
+        return auf(url)               # Dienst hört womöglich nur auf IPv6
 
 
 def get_json(url, headers=None, timeout=10):
@@ -554,34 +615,36 @@ ZAHL = {"ein": 1, "eine": 1, "einer": 1, "einem": 1, "zwei": 2, "drei": 3, "vier
 BRIEF_RE = re.compile(r"\b(bist du da|bist du wach|was geht ab|wach auf|aufwachen|briefing|lagebericht|status ?bericht|status bitte|guten morgen|moin|melde dich)\b")
 WETTER_RE = re.compile(r"wetter|regnet|regen|schnee|grad (draußen|draussen)|temperatur|draußen|draussen|regenschirm|jacke|sonnig|sonne scheint")
 SYS_RE = re.compile(r"\b(system|cpu|prozessor|arbeitsspeicher|ram|festplatte|auslastung|speicherplatz|rechner)\b")
-TIMER_RE = re.compile(r"(?:in|nach|für|auf)\s+(\d+(?:[.,]\d+)?|" + "|".join(ZAHL) + r")\s*(sekunden?|sek|minuten?|min|stunden?|std)\b")
+TIMER_RE = re.compile(r"(?:in|nach|für|auf)\s+(\d+(?:[.,]\d+)?|" + "|".join(ZAHL) + r")\s*(sekunden?|sek|minuten?|min|stunden?|std)\b", re.I)
 
 
-def parse_timer(u):
-    if not re.search(r"erinner|timer|wecker|weck mich|stopp?uhr|countdown|sag mir bescheid|sag bescheid", u):
+def parse_timer(text):
+    """Erwartet den Originaltext (nicht kleingeschrieben), damit der Erinnerungstext seine Schreibweise behält."""
+    if not re.search(r"erinner|timer|wecker|weck mich|stopp?uhr|countdown|sag mir bescheid|sag bescheid", text, re.I):
         return None
-    m = TIMER_RE.search(u)
+    m = TIMER_RE.search(text)
     if not m:
         return None
-    raw = m.group(1).replace(",", ".")
+    raw = m.group(1).lower().replace(",", ".")
     n = ZAHL.get(raw)
     if n is None:
         try:
             n = float(raw)
         except ValueError:
             return None
-    unit = m.group(2)
+    unit = m.group(2).lower()
     sek = n * (3600 if unit.startswith(("stunde", "std")) else 60 if unit.startswith("min") else 1)
     if not 1 <= sek <= 86400:
         return None
-    rest = u[m.end():].strip()
-    rest = re.sub(r"^(an|daran|dass|das|zu|ans|mich|bitte)\s+", "", rest)
-    rest = re.sub(r"^(dass|das|an)\s+", "", rest).strip(" .!?")
-    rest = re.split(r"\s+(?:und|dann)\s+(?:öffne|oeffne|mach|zeig|stell|sag|wechsel|merk|starte|such)\b", rest)[0].strip(" ,.")
+    rest = text[m.end():].strip()
+    rest = re.sub(r"^(an|daran|dass|das|zu|ans|mich|bitte|für|fürs|wegen)\s+", "", rest, flags=re.I)
+    rest = re.sub(r"^(dass|das|an)\s+", "", rest, flags=re.I).strip(" .!?")
+    rest = re.split(r"\s+(?:und|dann)\s+(?:öffne|oeffne|mach|zeig|stell|sag|wechsel|merk|starte|such)\b", rest, flags=re.I)[0].strip(" ,.")
     if not rest:
-        pre = re.sub(r".*?(erinner\w*\s+(mich\s+)?(an|daran)?)", "", u[:m.start()]).strip(" ,.")
-        rest = pre if pre and len(pre) < 80 and not re.search(r"timer|weck|stell|countdown|stopp", pre) else ""
-    return {"sek": int(sek), "text": rest[:120] or "Timer abgelaufen"}
+        pre = re.sub(r".*?(erinner\w*\s+(mich\s+)?(an|daran)?)", "", text[:m.start()], flags=re.I).strip(" ,.")
+        rest = pre if pre and len(pre) < 80 and not re.search(r"timer|weck|stell|countdown|stopp", pre, re.I) else ""
+    rest = rest[:120]
+    return {"sek": int(sek), "text": (rest[0].upper() + rest[1:]) if rest else "Timer abgelaufen"}
 
 
 def find_url(u, s):
@@ -650,7 +713,7 @@ def route(u, s, orig=None):
         ctx.append(f"Du hast {n} passende Notiz(en) aus dem Gedächtnis gelöscht." if n else
                    "Im Gedächtnis gab es dazu keine passende Notiz. Sag das ehrlich.")
 
-    t = parse_timer(u)
+    t = parse_timer(orig)
     if t:
         actions.append({"typ": "timer", **t})
         mins = t["sek"] / 60
@@ -801,9 +864,10 @@ def system_prompt(s, ctx, websuche, mit_gedaechtnis=True):
         p.append("GEDÄCHTNIS: Aus Datenschutzgründen bleibt das Gedächtnis auf dem PC des Nutzers und wird dir nicht geschickt. "
                  "Fragt er danach oder nach 'heute steht an', sag kurz, dass die Notizen nur bei der lokalen KI verfügbar sind.")
     if s.get("auto_merken") and mit_gedaechtnis:
-        p.append("Wenn der Nutzer dir etwas Dauerhaftes über sich erzählt (Name, Vorlieben, Projekte, Termine, Ziele), das noch "
-                 "nicht im Gedächtnis steht, hänge ganz am Ende genau eine Zeile an: [merken: kurzer Satz in der dritten Person]. "
-                 "Diese Zeile wird nicht vorgelesen. Sonst nie.")
+        p.append("Nur wenn der Nutzer in seiner letzten Nachricht selbst etwas Dauerhaftes über sich erzählt hat (Name, Vorlieben, "
+                 "Projekte, Termine, Ziele), das noch nicht im Gedächtnis steht, hänge ganz am Ende genau eine Zeile an: "
+                 "[merken: Der Nutzer ...]. Diese Zeile wird nicht vorgelesen. Merke nie etwas über dich selbst, über das "
+                 "Gespräch, über Fragen, Rechnungen oder Befehle des Nutzers. Im Zweifel und in allen anderen Fällen: keine Zeile.")
     if ctx:
         p.append("GERADE ERLEDIGT / ECHTE DATEN:\n" + "\n".join(ctx))
     return "\n\n".join(p)
@@ -1064,9 +1128,10 @@ def run_chat(payload, emit):
         return emit({"t": "error", "message": str(e)})
     except Exception as e:
         return emit({"t": "error", "message": f"Unerwarteter Fehler: {type(e).__name__}: {e}"[:300]})
-    if s.get("auto_merken"):
+    # Automatisch Gelerntes: nicht, wenn der Nutzer in dieser Nachricht selbst gemerkt/gelöscht hat (sonst Doppelungen)
+    if s.get("auto_merken") and not memacts:
         for m in tf.merk[:2]:
-            it = mem_add(m)
+            it = mem_add(m, auto=True) if lernbar(m, s) else None
             if it:
                 emit({"t": "action", "typ": "gedaechtnis", "aktion": "gelernt", "text": it["text"]})
     emit({"t": "done", "text": "".join(full).strip()})
